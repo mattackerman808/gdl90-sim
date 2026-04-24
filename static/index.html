@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDL90 Sim</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="map"></div>
+
+<header class="toolbar">
+  <button id="playPause" class="primary">Start</button>
+  <label>Start at
+    <select id="startAt">
+      <option value="37.4611,-122.1150,270,1500">KPAO</option>
+      <option value="37.6188,-122.3754,280,13">KSFO</option>
+      <option value="37.3626,-121.9291,300,62">KSJC</option>
+      <option value="36.9357,-121.7895,200,163">KWVI</option>
+      <option value="36.6636,-121.6067,310,85">KSNS</option>
+      <option value="37.5134,-122.5007,300,66">KHAF</option>
+      <option value="38.5125,-121.4927,340,24">KSAC</option>
+      <option value="38.1439,-122.5594,250,20">KDVO</option>
+    </select>
+  </label>
+  <label>UDP <input id="target" value="127.0.0.1:4000" spellcheck="false"></label>
+  <span class="spacer"></span>
+  <span id="connState" class="pill">idle</span>
+</header>
+
+<aside class="hud">
+  <div><b>LAT</b> <span id="hLat">—</span></div>
+  <div><b>LON</b> <span id="hLon">—</span></div>
+  <div><b>ALT</b> <span id="hAlt">—</span> ft</div>
+  <div><b>HDG</b> <span id="hHdg">—</span>°</div>
+  <div><b>GS</b>  <span id="hGs">—</span> kt</div>
+  <div><b>VS</b>  <span id="hVs">—</span> fpm</div>
+</aside>
+
+<footer class="keys">
+  <span><kbd>←</kbd><kbd>→</kbd> turn (shift = 2×)</span>
+  <span><kbd>↑</kbd><kbd>↓</kbd> climb/descend</span>
+  <span><kbd>+</kbd><kbd>−</kbd> speed ±10 kt</span>
+  <span><kbd>Space</kbd> pause</span>
+  <span><kbd>R</kbd> reset</span>
+  <span><kbd>T</kbd>+click teleport</span>
+</footer>
+
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<script src="/static/sim.js"></script>
+</body>
+</html>
