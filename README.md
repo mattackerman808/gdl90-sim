@@ -11,14 +11,19 @@ python3 server.py
 # then open http://127.0.0.1:8765
 ```
 
-Defaults emit UDP to `127.0.0.1:4000` (the iOS Simulator, which forwards
-127.0.0.1 to the Mac host). For a physical iPad, override the UDP target:
+By default the sim broadcasts on the Mac's Wi-Fi subnet (e.g. `192.168.1.255:4000`),
+mirroring how a real Stratus emits packets on its own AP. Any iPad on the
+same Wi-Fi running Tachbase will pick it up — no IP lookup needed.
+
+Overrides:
 
 ```bash
-python3 server.py --target 192.168.1.42:4000
+python3 server.py --target 127.0.0.1:4000        # iOS Simulator
+python3 server.py --target 192.168.1.42:4000     # specific iPad
+python3 server.py --target 255.255.255.255:4000  # limited broadcast
 ```
 
-or change it live in the toolbar `UDP` field.
+You can also change the target live in the toolbar `UDP` field.
 
 ## Controls
 
@@ -44,9 +49,22 @@ or change it live in the toolbar `UDP` field.
 - **D**: Load a Tachbase flight plan and autopilot it at a set GS
 - **E**: Scripted scenarios (hold entry, DME arc, missed approach)
 
-## No deps
+## Deps
 
-Pure Python stdlib on the server side; MapLibre GL JS loaded from a CDN on
-the browser side. Map tiles come from `cdn.tachbase.com` for 1:1 visual
+Optional but strongly recommended:
+
+```bash
+pip install pygeomag
+```
+
+Without `pygeomag` the sim falls back to a one-line linear approximation
+of magnetic declination, which produces a permanent ~3° crab in the HSI
+track diamond on the iPad even with zero wind. With `pygeomag` installed
+the sim emits physically-consistent ownship-true and AHRS-magnetic values
+(matching what real Stratus hardware does), and the diamond sits cleanly
+at the lubber.
+
+Everything else is Python stdlib. MapLibre GL JS loads from a CDN on the
+browser side, and map tiles come from `cdn.tachbase.com` for 1:1 visual
 match with the iOS app — the AIRAC cycle is auto-detected via
 `/cgi-bin/tile_manifest.py`.
