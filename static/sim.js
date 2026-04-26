@@ -6,11 +6,22 @@ const SEND_HZ = 2;
 
 const State = {
   lat: 37.4611, lon: -122.1150, alt: 1500,
+  // hdg is interpreted as MAGNETIC — same convention the iPad PFD displays
+  // (AHRS heading is magnetic per GDL90 spec, and the PFD converts ownship
+  // ground track to magnetic via the WMM grid before showing it). Position
+  // physics adds the local declination to convert to true before stepping.
   hdg: 270, gs: 110, vs: 0,
   running: false,
   lastTickMs: 0,
   start: { lat: 37.4611, lon: -122.1150, alt: 1500, hdg: 270, gs: 110 },
   teleportMode: false,
+  // Local magnetic declination (east positive). Updated from each /pos
+  // response — server has pygeomag and computes against NOAA WMM-2025.
+  // Initial 0 means the very first physics tick may drift a fraction of
+  // a nautical mile before the first /pos round-trip lands; once that
+  // first response arrives subsequent ticks use the live value and the
+  // aircraft tracks its course centerline.
+  decl: 0,
 };
 
 const Keys = {};
@@ -77,9 +88,12 @@ function tickPhysics() {
   if (Keys.ArrowDown) State.alt = Math.max(0,     State.alt - 500 * climbMult * dt / 60);
   State.vs = ((State.alt - prevAlt) / dt) * 60;
 
-  // Position integration (nm = deg * 60; ft→nm via 1/6076; gs in kt = nm/hr)
+  // Position integration (nm = deg * 60; ft→nm via 1/6076; gs in kt = nm/hr).
+  // State.hdg is magnetic; convert to true via local declination so the
+  // airplane physically moves along the bearing the iPad PFD is showing.
   const dNm = State.gs * dt / 3600;  // nm traveled in dt
-  const hdgRad = State.hdg * Math.PI / 180;
+  const trueHdg = (State.hdg + State.decl + 360) % 360;
+  const hdgRad = trueHdg * Math.PI / 180;
   State.lat += (dNm / 60) * Math.cos(hdgRad);
   State.lon += (dNm / 60) * Math.sin(hdgRad) / Math.cos(State.lat * Math.PI / 180);
 }
@@ -94,7 +108,14 @@ async function sendPosition() {
         hdg: State.hdg, gs: State.gs, vs: State.vs,
       }),
     });
-    if (!r.ok) setConn("error", "send err");
+    if (!r.ok) { setConn("error", "send err"); return; }
+    // Pull back the server-side declination (NOAA WMM-2025 via pygeomag)
+    // for the next physics tick. Cheap to refresh every send — declination
+    // shifts ~0.1°/100 nm, so even a stale value from minutes ago is fine.
+    try {
+      const data = await r.json();
+      if (typeof data.decl === "number") State.decl = data.decl;
+    } catch (e) {}
   } catch (e) {
     setConn("error", "send err");
   }

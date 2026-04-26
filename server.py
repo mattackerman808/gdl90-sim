@@ -323,7 +323,13 @@ class SimHandler(BaseHTTPRequestHandler):
                 t = threading.Thread(target=_heartbeat_loop, daemon=True)
                 t.start()
 
-            return self._send_json({"ok": True})
+            # Return current local declination so the browser physics can
+            # interpret State.hdg as magnetic (matching what the iPad PFD
+            # displays) and convert to true for the position step. Without
+            # this the airplane physically moves at the *true* compass
+            # bearing of the magnetic value, which slides the aircraft off
+            # any GPS course at full local-variation drift rate.
+            return self._send_json({"ok": True, "decl": decl})
 
         if path == "/target":
             try:
