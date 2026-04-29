@@ -39,6 +39,22 @@
   <div><b>VS</b>  <span id="hVs">—</span> fpm</div>
 </aside>
 
+<aside class="traffic-panel">
+  <header>
+    <span>Traffic</span>
+    <button id="trafficClear" class="ghost" title="Clear all spawned targets">Clear</button>
+  </header>
+  <div class="scenario-buttons">
+    <button data-scn="warning"  title="Head-on 12 o'clock 1.5 nm, level — fires red TA">Warning</button>
+    <button data-scn="caution"  title="Head-on 12 o'clock 4 nm, level — fires amber TA">Caution</button>
+    <button data-scn="cross_r"  title="Crossing right-to-left, 3 o'clock 3 nm">3 o'clock cross</button>
+    <button data-scn="overtake" title="Behind us 6 o'clock 4 nm, faster">Overtake</button>
+    <button data-scn="below"    title="1500 ft below at 12 o'clock 3 nm — no alert">Below</button>
+    <button data-scn="climbing" title="Climbing into our level from 1000 ft below 2 nm ahead">Climbing</button>
+  </div>
+  <ul id="trafficList"></ul>
+</aside>
+
 <footer class="keys">
   <span><kbd>←</kbd><kbd>→</kbd> turn (shift = 2×)</span>
   <span><kbd>↑</kbd><kbd>↓</kbd> climb/descend</span>
