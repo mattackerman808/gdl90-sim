@@ -47,7 +47,147 @@ _state = {
     # Previous /pos sample used to derive bank angle from turn rate.
     "prev_hdg": None,
     "prev_t": 0.0,
+    # Last known ownship state, used as the anchor when a scenario spawns
+    # a relative target ("3 nm at 12 o'clock"). Updated on every /pos.
+    "ownship": None,        # {"lat","lon","alt","hdg","gs","vs","t"}
+    # Active traffic targets keyed by hex id. Each entry is a dict with
+    # current state + the fixed velocity vector. Ticked forward on every
+    # /pos so each ownship update gets a matching traffic_report frame.
+    "traffic": {},          # hex_int → state dict
+    "traffic_lock": threading.Lock(),
+    "traffic_t": 0.0,
 }
+
+
+# Conservative cleanup: drop targets that drift more than 25 nm from
+# ownship — they're not threats, and leaving them queued blows the
+# trafficCache on the iPad pointlessly.
+TRAFFIC_DROP_RANGE_NM = 25.0
+EARTH_NM = 3440.065
+
+
+def _great_circle_nm(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return EARTH_NM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _project(lat, lon, track_deg, dist_nm):
+    """Move (lat, lon) `dist_nm` along bearing `track_deg`. Flat-earth
+    approximation — fine for the few-mile distances we project per tick."""
+    cos_lat = max(0.01, math.cos(math.radians(lat)))
+    rad = math.radians(track_deg)
+    dlat = (dist_nm * math.cos(rad)) / 60.0
+    dlon = (dist_nm * math.sin(rad)) / (60.0 * cos_lat)
+    return lat + dlat, lon + dlon
+
+
+def _spawn_relative_target(scenario):
+    """Build a target dict from a scenario spec relative to current ownship.
+
+    scenario keys (all optional except clock + range_nm):
+      hex            24-bit address (auto-assigned if omitted)
+      callsign       up to 8 chars (default 'SIM' + sequence)
+      clock          1..12, where target lat/lon is placed at this clock
+                     position relative to ownship's current heading
+      range_nm       distance from ownship at spawn time
+      alt_diff_ft    target altitude minus ownship altitude
+      track          target track (true deg). Common patterns:
+                       "head_on"   → ownship_track + 180
+                       "parallel"  → ownship_track
+                       "crossing"  → ownship_track + 90
+                       <number>    → absolute track in degrees
+      gs_kt          target ground speed (default 150)
+      vspeed_fpm     target vertical speed (default 0)
+      emitter        emitter category (default 1, light fixed-wing)
+    """
+    own = _state["ownship"]
+    if not own:
+        return None, "no ownship — fly a moment first so the spawn point is real"
+
+    clock = int(scenario.get("clock", 12))
+    if clock < 1 or clock > 12:
+        return None, "clock must be 1..12"
+    range_nm = float(scenario.get("range_nm", 3.0))
+    alt_diff = float(scenario.get("alt_diff_ft", 0.0))
+
+    # Place at the clock position relative to ownship's current track.
+    rel_bearing = ((clock % 12) * 30.0)  # 12 → 0, 3 → 90, 6 → 180, 9 → 270
+    spawn_track = (own["hdg"] + rel_bearing) % 360.0
+    lat, lon = _project(own["lat"], own["lon"], spawn_track, range_nm)
+    alt_ft = own["alt"] + alt_diff
+
+    track_in = scenario.get("track", "head_on")
+    if track_in == "head_on":
+        target_track = (own["hdg"] + 180.0) % 360.0
+    elif track_in == "parallel":
+        target_track = own["hdg"]
+    elif track_in == "crossing":
+        target_track = (own["hdg"] + 90.0) % 360.0
+    else:
+        target_track = float(track_in) % 360.0
+
+    gs_kt = float(scenario.get("gs_kt", 150.0))
+    vspeed_fpm = float(scenario.get("vspeed_fpm", 0.0))
+    emitter = int(scenario.get("emitter", 1))
+
+    # Auto-assign hex if not provided. Random in 24-bit ICAO space.
+    if "hex" in scenario:
+        hex_id = int(scenario["hex"]) & 0xFFFFFF
+    else:
+        hex_id = (0xA00000 | (int(time.time() * 1000) & 0xFFFFFF)) & 0xFFFFFF
+
+    callsign = str(scenario.get("callsign", f"SIM{hex_id & 0xFFF:03X}"))[:8]
+
+    return {
+        "hex": hex_id,
+        "callsign": callsign,
+        "lat": lat, "lon": lon, "alt": alt_ft,
+        "track": target_track, "gs": gs_kt, "vspeed": vspeed_fpm,
+        "emitter": emitter,
+        "spawned_at": time.time(),
+    }, None
+
+
+def _advance_traffic(now):
+    """Move every active target forward by elapsed time × velocity.
+    Drops targets that have drifted past TRAFFIC_DROP_RANGE_NM."""
+    if not _state["ownship"]:
+        return
+    last = _state["traffic_t"] or now
+    dt = max(0.0, min(now - last, 5.0))     # clamp to 5s in case of stalls
+    _state["traffic_t"] = now
+    own_lat = _state["ownship"]["lat"]
+    own_lon = _state["ownship"]["lon"]
+    with _state["traffic_lock"]:
+        drop = []
+        for hex_id, t in _state["traffic"].items():
+            dist = (t["gs"] / 3600.0) * dt    # nm in dt seconds
+            t["lat"], t["lon"] = _project(t["lat"], t["lon"], t["track"], dist)
+            t["alt"] += (t["vspeed"] / 60.0) * dt
+            if _great_circle_nm(own_lat, own_lon, t["lat"], t["lon"]) > TRAFFIC_DROP_RANGE_NM:
+                drop.append(hex_id)
+        for hex_id in drop:
+            del _state["traffic"][hex_id]
+
+
+def _emit_traffic_frames():
+    """Send one Traffic Report (msg 0x14) per active target. Called after
+    the ownship frame on every /pos so the iPad's 1Hz cache flush sees a
+    consistent snapshot."""
+    with _state["traffic_lock"]:
+        for t in _state["traffic"].values():
+            try:
+                _send_udp(gdl90.traffic_report(
+                    address=t["hex"],
+                    lat=t["lat"], lon=t["lon"], alt_ft=t["alt"],
+                    track_deg=t["track"], speed_kt=t["gs"], vspeed_fpm=t["vspeed"],
+                    callsign=t["callsign"], emitter_category=t["emitter"],
+                ))
+            except Exception as e:
+                print(f"[sim] traffic_report failed for {t['hex']:06X}: {e}", file=sys.stderr)
 
 
 def _detect_subnet_broadcast() -> str:
@@ -250,6 +390,18 @@ class SimHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/":
             return self._send_file("index.html")
+        if path == "/traffic":
+            with _state["traffic_lock"]:
+                out = [{
+                    "hex": f"{t['hex']:06X}",
+                    "callsign": t["callsign"],
+                    "lat": t["lat"], "lon": t["lon"], "alt": int(t["alt"]),
+                    "track": int(t["track"]), "gs": int(t["gs"]),
+                    "vspeed": int(t["vspeed"]),
+                    "spawned_at": int(t["spawned_at"]),
+                } for t in _state["traffic"].values()]
+            return self._send_json({"targets": out, "count": len(out)})
+
         if path == "/config":
             global _VFR_CYCLE
             if _VFR_CYCLE is None:
@@ -318,6 +470,14 @@ class SimHandler(BaseHTTPRequestHandler):
             _state["prev_t"] = now
             _state["last_pos_at"] = now
 
+            # Snapshot ownship for the traffic-spawn anchor + advance and
+            # emit any active traffic targets so the iPad's 1Hz cache
+            # flush sees a fresh frame this tick.
+            _state["ownship"] = {"lat": lat, "lon": lon, "alt": alt,
+                                 "hdg": hdg, "gs": gs, "vs": vs, "t": now}
+            _advance_traffic(now)
+            _emit_traffic_frames()
+
             if not _state["heartbeat_thread_started"]:
                 _state["heartbeat_thread_started"] = True
                 t = threading.Thread(target=_heartbeat_loop, daemon=True)
@@ -330,6 +490,21 @@ class SimHandler(BaseHTTPRequestHandler):
             # bearing of the magnetic value, which slides the aircraft off
             # any GPS course at full local-variation drift rate.
             return self._send_json({"ok": True, "decl": decl})
+
+        if path == "/traffic/spawn":
+            target, err = _spawn_relative_target(data)
+            if err:
+                return self._send_json({"error": err}, status=400)
+            with _state["traffic_lock"]:
+                _state["traffic"][target["hex"]] = target
+            return self._send_json({"ok": True, "hex": f"{target['hex']:06X}",
+                                    "callsign": target["callsign"]})
+
+        if path == "/traffic/clear":
+            with _state["traffic_lock"]:
+                count = len(_state["traffic"])
+                _state["traffic"].clear()
+            return self._send_json({"ok": True, "cleared": count})
 
         if path == "/target":
             try:

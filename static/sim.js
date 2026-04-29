@@ -234,5 +234,61 @@ document.getElementById("target").addEventListener("change", async e => {
   });
 });
 
+// ---- Traffic scenarios ------------------------------------------------------
+//
+// Each scenario is a /traffic/spawn body relative to current ownship. The
+// server resolves "clock + range" against the latest /pos snapshot so the
+// target appears where the pilot expects regardless of where the airplane
+// physically is. Trajectories are straight-line constant velocity — good
+// enough to validate the TA producer's range / closure / tau math.
+const SCENARIOS = {
+  warning:  { clock: 12, range_nm: 1.5, alt_diff_ft: 0,     track: "head_on",  gs_kt: 150, callsign: "TGT-WARN" },
+  caution:  { clock: 12, range_nm: 4.0, alt_diff_ft: 0,     track: "head_on",  gs_kt: 150, callsign: "TGT-CAUT" },
+  cross_r:  { clock: 3,  range_nm: 3.0, alt_diff_ft: 0,     track: "crossing", gs_kt: 120, callsign: "TGT-CRS"  },
+  overtake: { clock: 6,  range_nm: 4.0, alt_diff_ft: 0,     track: "parallel", gs_kt: 220, callsign: "TGT-OVR"  },
+  below:    { clock: 12, range_nm: 3.0, alt_diff_ft: -1500, track: "head_on",  gs_kt: 150, callsign: "TGT-LO"   },
+  climbing: { clock: 12, range_nm: 2.0, alt_diff_ft: -1000, track: "head_on",  gs_kt: 130, vspeed_fpm: 1500, callsign: "TGT-CLM" },
+};
+
+document.querySelectorAll(".scenario-buttons button").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const scn = SCENARIOS[btn.dataset.scn];
+    if (!scn) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch("/traffic/spawn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(scn),
+      });
+      const data = await r.json();
+      if (data.error) console.warn("[traffic] spawn:", data.error);
+    } finally {
+      setTimeout(() => { btn.disabled = false; }, 250);
+    }
+    refreshTrafficList();
+  });
+});
+
+document.getElementById("trafficClear").addEventListener("click", async () => {
+  await fetch("/traffic/clear", { method: "POST" });
+  refreshTrafficList();
+});
+
+async function refreshTrafficList() {
+  try {
+    const r = await fetch("/traffic");
+    const data = await r.json();
+    const ul = document.getElementById("trafficList");
+    ul.innerHTML = "";
+    for (const t of data.targets) {
+      const li = document.createElement("li");
+      li.textContent = `${t.callsign}  ${t.alt} ft  ${t.track}° / ${t.gs} kt`;
+      ul.appendChild(li);
+    }
+  } catch (e) { /* ignore */ }
+}
+setInterval(refreshTrafficList, 1500);
+
 initMap();
 loop();

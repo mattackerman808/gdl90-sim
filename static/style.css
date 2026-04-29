@@ -68,3 +68,47 @@ html, body {
   width: 32px; height: 32px;
   pointer-events: none;
 }
+
+/* Traffic scenario panel — sits below the HUD on the right edge. */
+.traffic-panel {
+  position: absolute; top: 220px; right: 12px;
+  width: 220px; z-index: 2;
+  background: rgba(15, 20, 28, 0.92);
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.traffic-panel header {
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 600; color: #f3f4f6;
+  margin-bottom: 6px;
+}
+.traffic-panel button.ghost {
+  background: transparent; color: #9ca3af; border: 1px solid #374151;
+  border-radius: 3px; font-size: 11px; padding: 2px 8px; cursor: pointer;
+}
+.traffic-panel button.ghost:hover { color: #f3f4f6; border-color: #6b7280; }
+.scenario-buttons {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+  margin-bottom: 6px;
+}
+.scenario-buttons button {
+  background: #1f2937; color: #e5e7eb; border: 1px solid #374151;
+  border-radius: 3px; padding: 5px 6px; font-size: 11px; cursor: pointer;
+  text-align: left;
+}
+.scenario-buttons button:hover:not(:disabled) {
+  background: #374151; border-color: #4b5563;
+}
+.scenario-buttons button:disabled { opacity: 0.5; cursor: wait; }
+.traffic-panel ul {
+  list-style: none; padding: 0; margin: 0;
+  max-height: 160px; overflow-y: auto;
+  font: 11px "SF Mono", Menlo, monospace;
+  color: #9ca3af;
+}
+.traffic-panel li {
+  padding: 2px 0; border-top: 1px solid #1f2937;
+}
+.traffic-panel li:first-child { border-top: 0; }
