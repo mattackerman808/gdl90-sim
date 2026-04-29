@@ -119,12 +119,22 @@ def _spawn_relative_target(scenario):
     lat, lon = _project(own["lat"], own["lon"], spawn_track, range_nm)
     alt_ft = own["alt"] + alt_diff
 
+    # Target track relative to ownship. The geometry that produces an
+    # actual TA depends on how the target is moving relative to the
+    # line-of-sight, not just its heading — so e.g. for a target at
+    # 3 o'clock to *cross* our path (toward our nose) it has to head
+    # toward our 9 o'clock, which is ownship_hdg - 90, not + 90.
     track_in = scenario.get("track", "head_on")
     if track_in == "head_on":
         target_track = (own["hdg"] + 180.0) % 360.0
     elif track_in == "parallel":
         target_track = own["hdg"]
-    elif track_in == "crossing":
+    elif track_in in ("cross_left", "crossing"):
+        # Target crosses leftward in front of us — used for a target at
+        # the 1-5 o'clock side that needs to converge with our path.
+        target_track = (own["hdg"] - 90.0 + 360.0) % 360.0
+    elif track_in == "cross_right":
+        # Mirror — for a target at 7-11 o'clock crossing rightward.
         target_track = (own["hdg"] + 90.0) % 360.0
     else:
         target_track = float(track_in) % 360.0

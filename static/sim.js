@@ -236,18 +236,32 @@ document.getElementById("target").addEventListener("change", async e => {
 
 // ---- Traffic scenarios ------------------------------------------------------
 //
-// Each scenario is a /traffic/spawn body relative to current ownship. The
-// server resolves "clock + range" against the latest /pos snapshot so the
-// target appears where the pilot expects regardless of where the airplane
-// physically is. Trajectories are straight-line constant velocity — good
-// enough to validate the TA producer's range / closure / tau math.
+// Each scenario is a /traffic/spawn body relative to current ownship.
+// Tuned against ownship default 110 kt + receiver TA thresholds:
+//   caution: range ≤ 6 nm AND |dAlt| ≤ 1200 AND closing AND tau ≤ 35 s
+//   warning: tau ≤ 20 s AND range ≤ 3 nm AND |dAlt| ≤ 600
+//
+// Numbers picked so each scenario fires in ≤ 5 s after spawn — slow-developing
+// crossers / overtakers are aviation-realistic but a pain for testing.
 const SCENARIOS = {
-  warning:  { clock: 12, range_nm: 1.5, alt_diff_ft: 0,     track: "head_on",  gs_kt: 150, callsign: "TGT-WARN" },
-  caution:  { clock: 12, range_nm: 4.0, alt_diff_ft: 0,     track: "head_on",  gs_kt: 150, callsign: "TGT-CAUT" },
-  cross_r:  { clock: 3,  range_nm: 3.0, alt_diff_ft: 0,     track: "crossing", gs_kt: 120, callsign: "TGT-CRS"  },
-  overtake: { clock: 6,  range_nm: 4.0, alt_diff_ft: 0,     track: "parallel", gs_kt: 220, callsign: "TGT-OVR"  },
-  below:    { clock: 12, range_nm: 3.0, alt_diff_ft: -1500, track: "head_on",  gs_kt: 150, callsign: "TGT-LO"   },
-  climbing: { clock: 12, range_nm: 2.0, alt_diff_ft: -1000, track: "head_on",  gs_kt: 130, vspeed_fpm: 1500, callsign: "TGT-CLM" },
+  // Head-on 1 nm, target 150 kt → closure 260 kt, tau 13.8 s → red warning.
+  warning:  { clock: 12, range_nm: 1.0, alt_diff_ft: 0,     track: "head_on",    gs_kt: 150, callsign: "TGT-WARN" },
+  // Head-on 2.5 nm, target 150 kt → closure 260 kt, tau 34.6 s → amber
+  // (just inside the 35 s caution gate, well outside the 20 s warning gate).
+  caution:  { clock: 12, range_nm: 2.5, alt_diff_ft: 0,     track: "head_on",    gs_kt: 150, callsign: "TGT-CAUT" },
+  // 3 o'clock, 1 nm, target heads ownship_hdg - 90 (crosses toward our path
+  // from the right). Closure 150 kt, tau 24 s → caution.
+  cross_r:  { clock: 3,  range_nm: 1.0, alt_diff_ft: 0,     track: "cross_left", gs_kt: 150, callsign: "TGT-CRS"  },
+  // 6 o'clock 1 nm parallel, target 250 kt vs ownship 110 → closure 140 kt,
+  // tau 25.7 s → caution.
+  overtake: { clock: 6,  range_nm: 1.0, alt_diff_ft: 0,     track: "parallel",   gs_kt: 250, callsign: "TGT-OVR"  },
+  // 12 o'clock 1.5 nm, target 1500 ft below → outside ±1200 ft band → NO
+  // alert. Control test that the vertical gate is wired correctly.
+  below:    { clock: 12, range_nm: 1.5, alt_diff_ft: -1500, track: "head_on",    gs_kt: 150, callsign: "TGT-LO"   },
+  // 12 o'clock 1.5 nm, target 800 ft below climbing 2000 fpm. Caution
+  // immediately (tau ~21 s, dAlt 800 inside ±1200 outside ±600), escalates
+  // to warning as alt closes.
+  climbing: { clock: 12, range_nm: 1.5, alt_diff_ft: -800,  track: "head_on",    gs_kt: 150, vspeed_fpm: 2000, callsign: "TGT-CLM" },
 };
 
 document.querySelectorAll(".scenario-buttons button").forEach(btn => {
