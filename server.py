@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.request
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -317,11 +318,31 @@ def _derive_ahrs(hdg_deg: float, gs_kt: float, vs_fpm: float,
     return roll, pitch, hdg_deg
 
 
+# AIRAC anchor: cycle 2606 is effective 2026-06-11 (per
+# tachbase-api lib/cycles.py / live /api/tile_manifest). Cycles are 28 days.
+# Used as fallback when the live manifest can't be reached so we never ship
+# a stale literal like the old "2604" default.
+_AIRAC_ANCHOR_DATE = date(2026, 6, 11)
+
+
+def _airac_cycle_for(today: date) -> str:
+    """Compute the AIRAC cycle ID effective on `today` (YYCC, 1-indexed within
+    the calendar year of the cycle's effective date)."""
+    cycles_from_anchor = (today - _AIRAC_ANCHOR_DATE).days // 28
+    cycle_eff = _AIRAC_ANCHOR_DATE + timedelta(days=cycles_from_anchor * 28)
+    first_of_year = cycle_eff
+    while (first_of_year - timedelta(days=28)).year == cycle_eff.year:
+        first_of_year -= timedelta(days=28)
+    cc = (cycle_eff - first_of_year).days // 28 + 1
+    return f"{cycle_eff.year % 100:02d}{cc:02d}"
+
+
 def _fetch_vfr_cycle() -> str:
-    """Ask tachbase.com for the current VFR AIRAC cycle. Fall back to '2604'."""
+    """Ask the live tachbase API for the current VFR tile cycle; fall back to
+    the date-derived AIRAC cycle if the API is unreachable."""
     try:
         req = urllib.request.Request(
-            "https://www.tachbase.com/cgi-bin/tile_manifest.py",
+            "https://www.tachbase.com/api/tile_manifest",
             headers={"User-Agent": "gdl90-sim"},
         )
         with urllib.request.urlopen(req, timeout=4) as r:
@@ -330,11 +351,15 @@ def _fetch_vfr_cycle() -> str:
             if cycle:
                 return str(cycle)
     except Exception as e:
-        print(f"[sim] manifest fetch failed ({e}); using fallback cycle 2604", file=sys.stderr)
-    return "2604"
+        print(f"[sim] manifest fetch failed ({e}); using computed AIRAC fallback", file=sys.stderr)
+    return _airac_cycle_for(date.today())
 
 
-_VFR_CYCLE = None  # lazy-filled
+# Cached cycle + last-fetch time. Refreshed on /config when older than the TTL
+# below so a long-running sim picks up an AIRAC rotation without restart.
+_VFR_CYCLE: str | None = None
+_VFR_CYCLE_FETCHED_AT: float = 0.0
+_VFR_CYCLE_TTL_SEC = 3600.0  # 1 hour
 
 
 def _send_udp(pkt: bytes) -> None:
@@ -413,9 +438,10 @@ class SimHandler(BaseHTTPRequestHandler):
             return self._send_json({"targets": out, "count": len(out)})
 
         if path == "/config":
-            global _VFR_CYCLE
-            if _VFR_CYCLE is None:
+            global _VFR_CYCLE, _VFR_CYCLE_FETCHED_AT
+            if _VFR_CYCLE is None or (time.time() - _VFR_CYCLE_FETCHED_AT) > _VFR_CYCLE_TTL_SEC:
                 _VFR_CYCLE = _fetch_vfr_cycle()
+                _VFR_CYCLE_FETCHED_AT = time.time()
             host, port = _state["target"]
             return self._send_json({
                 "vfr_cycle": _VFR_CYCLE,

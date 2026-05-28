@@ -150,39 +150,41 @@ function updateHud() {
 
 let map = null;
 let marker = null;
-let vfrCycle = "2604";
 
 async function initMap() {
+  let vfrCycle = null;
   try {
     const r = await fetch("/config");
     const cfg = await r.json();
     if (cfg.vfr_cycle) vfrCycle = cfg.vfr_cycle;
     if (cfg.target) document.getElementById("target").value = cfg.target;
-  } catch (e) { /* fall back */ }
+  } catch (e) { /* /config unavailable — render OSM only */ }
 
-  const tileUrl = `https://cdn.tachbase.com/tile-cache/faa-charts/vfr/${vfrCycle}/{z}/{x}/{y}.png`;
+  const sources = {
+    "osm": {
+      type: "raster",
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tileSize: 256, minzoom: 0, maxzoom: 19,
+      attribution: "© OpenStreetMap",
+    },
+  };
+  const layers = [{ id: "osm", type: "raster", source: "osm", maxzoom: 6 }];
+  if (vfrCycle) {
+    sources["vfr"] = {
+      type: "raster",
+      tiles: [`https://cdn.tachbase.com/tile-cache/faa-charts/vfr/${vfrCycle}/{z}/{x}/{y}.png`],
+      tileSize: 256, minzoom: 5, maxzoom: 11,
+      attribution: "FAA VFR sectional (via Tachbase CDN)",
+    };
+    layers.push({ id: "vfr", type: "raster", source: "vfr", minzoom: 5 });
+  }
 
   map = new maplibregl.Map({
     container: "map",
     style: {
       version: 8,
-      sources: {
-        "vfr": {
-          type: "raster", tiles: [tileUrl], tileSize: 256,
-          minzoom: 5, maxzoom: 11,
-          attribution: "FAA VFR sectional (via Tachbase CDN)",
-        },
-        "osm": {
-          type: "raster",
-          tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-          tileSize: 256, minzoom: 0, maxzoom: 19,
-          attribution: "© OpenStreetMap",
-        },
-      },
-      layers: [
-        { id: "osm", type: "raster", source: "osm", maxzoom: 6 },
-        { id: "vfr", type: "raster", source: "vfr", minzoom: 5 },
-      ],
+      sources,
+      layers,
     },
     center: [State.lon, State.lat],
     zoom: 10,
