@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -362,20 +363,58 @@ _VFR_CYCLE_FETCHED_AT: float = 0.0
 _VFR_CYCLE_TTL_SEC = 3600.0  # 1 hour
 
 
+def _parse_target(s: str) -> tuple[str, int]:
+    """Parse a `host:port` / `[v6]:port` / `host` target string. Defaults
+    port to 4000. urlsplit understands the bracketed v6 form; the manual
+    rsplit handles unbracketed v4 host:port."""
+    parsed = urllib.parse.urlsplit("//" + s)
+    if parsed.hostname is not None:
+        return parsed.hostname, parsed.port or 4000
+    host, _, port = s.rpartition(":")
+    return (host or s, int(port) if port else 4000)
+
+
+def _format_target(host: str, port: int) -> str:
+    """Render host:port for display, bracketing v6 literals so the
+    string round-trips through _parse_target."""
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+# UDP sockets keyed by address family. We need separate sockets for v4 vs v6
+# (a v4 socket can't sendto a v6 address and vice versa). Created lazily so
+# starting the sim doesn't open a socket family we never use.
+_socks: dict[int, socket.socket] = {}
+_socks_lock = threading.Lock()
+
+
+def _get_sock(family: int) -> socket.socket:
+    with _socks_lock:
+        s = _socks.get(family)
+        if s is not None:
+            return s
+        s = socket.socket(family, socket.SOCK_DGRAM)
+        if family == socket.AF_INET:
+            # SO_BROADCAST is required to send to a v4 broadcast address;
+            # without it the kernel returns EACCES on sendto. Cheap to set
+            # on the unicast path too. v6 has no broadcast — multicast
+            # works without any extra socket option.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        _socks[family] = s
+        return s
+
+
 def _send_udp(pkt: bytes) -> None:
     host, port = _state["target"]
     try:
-        _sock.sendto(pkt, (host, port))
-    except OSError as e:
-        print(f"[sim] UDP send failed to {host}:{port}: {e}", file=sys.stderr)
-
-
-_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-# SO_BROADCAST is required to send to a broadcast address; without it the
-# kernel returns EACCES on sendto. The Stratus listener on the iPad
-# (GDL90Service.swift) already binds INADDR_ANY with SO_BROADCAST set, so
-# broadcast packets land the same as unicast.
-_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # getaddrinfo picks the right family and fills in scope_id for
+        # link-local v6 hosts (e.g. "fe80::1%en0"), which sendto needs to
+        # know which interface to egress on.
+        family, _socktype, _proto, _canon, sockaddr = socket.getaddrinfo(
+            host, port, type=socket.SOCK_DGRAM
+        )[0]
+        _get_sock(family).sendto(pkt, sockaddr)
+    except (OSError, socket.gaierror) as e:
+        print(f"[sim] UDP send failed to {_format_target(host, port)}: {e}", file=sys.stderr)
 
 
 def _heartbeat_loop() -> None:
@@ -445,7 +484,7 @@ class SimHandler(BaseHTTPRequestHandler):
             host, port = _state["target"]
             return self._send_json({
                 "vfr_cycle": _VFR_CYCLE,
-                "target": f"{host}:{port}",
+                "target": _format_target(host, port),
             })
         return self._send_file(path)
 
@@ -549,8 +588,8 @@ class SimHandler(BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError):
                 return self._send_json({"error": "need host/port"}, status=400)
             _state["target"] = (host, port)
-            print(f"[sim] UDP target -> {host}:{port}")
-            return self._send_json({"ok": True, "target": f"{host}:{port}"})
+            print(f"[sim] UDP target -> {_format_target(host, port)}")
+            return self._send_json({"ok": True, "target": _format_target(host, port)})
 
         return self.send_error(404)
 
@@ -569,14 +608,14 @@ def main():
         target_host = _detect_subnet_broadcast()
         target_port = 4000
     else:
-        host, _, port = args.target.partition(":")
-        target_host = host or _detect_subnet_broadcast()
-        target_port = int(port or "4000")
+        target_host, target_port = _parse_target(args.target)
+        if not target_host:
+            target_host = _detect_subnet_broadcast()
     _state["target"] = (target_host, target_port)
 
     server = ThreadingHTTPServer((args.host, args.port), SimHandler)
     print(f"[sim] http://{args.host}:{args.port}")
-    print(f"[sim] UDP target {_state['target'][0]}:{_state['target'][1]}")
+    print(f"[sim] UDP target {_format_target(target_host, target_port)}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

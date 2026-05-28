@@ -228,7 +228,18 @@ function updateMarker() {
 document.getElementById("playPause").addEventListener("click", togglePlay);
 document.getElementById("startAt").addEventListener("change", e => setStart(e.target.value));
 document.getElementById("target").addEventListener("change", async e => {
-  const [host, port] = e.target.value.split(":");
+  // Accept `[v6]:port` and `v4:port` (URL bracketed-host form). Rsplit on
+  // colon for v4 so we don't slice an unbracketed v6 literal in half.
+  const v = e.target.value.trim();
+  const bracketed = v.match(/^\[(.+)\]:(\d+)$/);
+  let host, port;
+  if (bracketed) {
+    host = bracketed[1]; port = bracketed[2];
+  } else {
+    const i = v.lastIndexOf(":");
+    host = i >= 0 ? v.slice(0, i) : v;
+    port = i >= 0 ? v.slice(i + 1) : "4000";
+  }
   await fetch("/target", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
