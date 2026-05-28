@@ -43,7 +43,11 @@ MIME = {
 # Updated at startup + on each /pos if we haven't yet. Also broadcast heartbeats
 # from a background thread once UDP target is known.
 _state = {
-    "target": ("255.255.255.255", 4000),
+    # List of (host, port) UDP destinations. Plural so the auto path can
+    # fan out to v4 subnet broadcast + v6 link-local all-nodes multicast at
+    # once. Explicit --target / UI overrides collapse this back to a single
+    # entry. Replaced at startup before any packet goes out.
+    "targets": [("255.255.255.255", 4000)],
     "last_pos_at": 0.0,
     "heartbeat_thread_started": False,
     # Previous /pos sample used to derive bank angle from turn rate.
@@ -202,53 +206,80 @@ def _emit_traffic_frames():
                 print(f"[sim] traffic_report failed for {t['hex']:06X}: {e}", file=sys.stderr)
 
 
-def _detect_subnet_broadcast() -> str:
-    """Return the broadcast address of the Mac's primary outbound interface.
+def _detect_auto_targets(port: int = 4000) -> list[tuple[str, int]]:
+    """Return UDP destinations for the auto-broadcast path: the v4 subnet
+    broadcast AND the v6 link-local all-nodes multicast (ff02::1) on
+    EVERY active LAN interface. Ethernet and Wi-Fi being up at the same
+    time both get packets so an iPad on either link sees the sim.
 
     Mirrors what a Stratus does on its own AP: subnet broadcast on UDP 4000.
-    Sending to the Wi-Fi subnet's broadcast address routes via the normal
-    routing table, so it survives VPNs / Ethernet / virtual interfaces being
-    up at the same time.
+    Reads each interface's broadcast address from `ifconfig` — corporate
+    Wi-Fi commonly uses /23 or /22, so guessing /24 sends to the wrong
+    address. ff02::1 reaches every v6 host on the link (they all join by
+    default), so it's the v6 equivalent of v4 broadcast.
 
-    Reads the actual broadcast address from `ifconfig` rather than guessing
-    /24 — corporate Wi-Fi commonly uses /23 or /22, and a wrong-mask
-    broadcast goes nowhere useful. Falls back to limited broadcast
-    (255.255.255.255) if anything in the chain fails.
+    Filter: interface must carry BROADCAST + RUNNING flags AND have a v4
+    address with a broadcast field. That naturally excludes loopback
+    (no BROADCAST), down interfaces, VPN tunnels (POINTOPOINT, no
+    BROADCAST), and Apple's AirDrop/awdl interfaces (v6-only). Docker /
+    VirtualBox bridges pass the filter, which is harmless — packets just
+    fall on the floor if no listener is on that bridge.
+
+    Falls back to v4 limited broadcast (255.255.255.255) if nothing
+    qualifies; the v6 leg is dropped in that case (we wouldn't know which
+    interface to scope ff02::1 to).
     """
-    # Step 1: ask the routing table which IP we'd source a packet from. No
-    # bytes go on the wire — connect on a UDP socket just resolves the
-    # source IP via the routing rule for 8.8.8.8.
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 1))
-        local_ip = s.getsockname()[0]
-    except OSError:
-        return "255.255.255.255"
-    finally:
-        s.close()
-
-    # Step 2: parse `ifconfig` output to find the interface owning that IP
-    # and read its broadcast field. macOS prints a line per inet:
-    #   inet 192.168.76.42 netmask 0xfffffe00 broadcast 192.168.77.255
     try:
         out = subprocess.check_output(["ifconfig"], text=True, timeout=2)
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return "255.255.255.255"
+        return [("255.255.255.255", port)]
 
+    # Parse ifconfig into per-interface blocks. A new block starts on any
+    # line that begins flush-left (e.g. "en0: flags=...mtu 1500"); body
+    # lines are indented.
+    blocks: list[tuple[str, str, list[str]]] = []  # (name, header line, body)
+    name = header = ""
+    body: list[str] = []
     for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 2 or parts[0] != "inet":
-            continue
-        if parts[1] != local_ip:
-            continue
-        # Found our interface line; pull the broadcast field if present.
-        try:
-            bcast_idx = parts.index("broadcast") + 1
-            return parts[bcast_idx]
-        except (ValueError, IndexError):
-            return "255.255.255.255"
+        if line and not line[0].isspace():
+            if name:
+                blocks.append((name, header, body))
+            name = line.split(":", 1)[0]
+            header = line
+            body = []
+        else:
+            body.append(line)
+    if name:
+        blocks.append((name, header, body))
 
-    return "255.255.255.255"
+    targets: list[tuple[str, int]] = []
+    seen_v4: set[str] = set()
+    for iface, hdr, lines in blocks:
+        if "BROADCAST" not in hdr or "RUNNING" not in hdr:
+            continue
+        v4_addr = v4_bcast = None
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "inet" and "broadcast" in parts:
+                try:
+                    v4_addr = parts[1]
+                    v4_bcast = parts[parts.index("broadcast") + 1]
+                    break
+                except (ValueError, IndexError):
+                    pass
+        if not v4_bcast:
+            continue
+        # Drop /32 pseudo-broadcasts where the "broadcast" address equals
+        # the host's own IP (Apple's 192.0.0.0/29 Wake-on-Wireless virtuals
+        # do this). Sending there just bounces back to the local stack.
+        if v4_bcast == v4_addr:
+            continue
+        if v4_bcast not in seen_v4:
+            targets.append((v4_bcast, port))
+            seen_v4.add(v4_bcast)
+        targets.append((f"ff02::1%{iface}", port))
+
+    return targets or [("255.255.255.255", port)]
 
 
 try:
@@ -404,17 +435,17 @@ def _get_sock(family: int) -> socket.socket:
 
 
 def _send_udp(pkt: bytes) -> None:
-    host, port = _state["target"]
-    try:
-        # getaddrinfo picks the right family and fills in scope_id for
-        # link-local v6 hosts (e.g. "fe80::1%en0"), which sendto needs to
-        # know which interface to egress on.
-        family, _socktype, _proto, _canon, sockaddr = socket.getaddrinfo(
-            host, port, type=socket.SOCK_DGRAM
-        )[0]
-        _get_sock(family).sendto(pkt, sockaddr)
-    except (OSError, socket.gaierror) as e:
-        print(f"[sim] UDP send failed to {_format_target(host, port)}: {e}", file=sys.stderr)
+    for host, port in _state["targets"]:
+        try:
+            # getaddrinfo picks the right family and fills in scope_id for
+            # link-local v6 hosts (e.g. "fe80::1%en0" or "ff02::1%en0"),
+            # which sendto needs to know which interface to egress on.
+            family, _socktype, _proto, _canon, sockaddr = socket.getaddrinfo(
+                host, port, type=socket.SOCK_DGRAM
+            )[0]
+            _get_sock(family).sendto(pkt, sockaddr)
+        except (OSError, socket.gaierror) as e:
+            print(f"[sim] UDP send failed to {_format_target(host, port)}: {e}", file=sys.stderr)
 
 
 def _heartbeat_loop() -> None:
@@ -481,10 +512,14 @@ class SimHandler(BaseHTTPRequestHandler):
             if _VFR_CYCLE is None or (time.time() - _VFR_CYCLE_FETCHED_AT) > _VFR_CYCLE_TTL_SEC:
                 _VFR_CYCLE = _fetch_vfr_cycle()
                 _VFR_CYCLE_FETCHED_AT = time.time()
-            host, port = _state["target"]
+            targets = _state["targets"]
             return self._send_json({
                 "vfr_cycle": _VFR_CYCLE,
-                "target": _format_target(host, port),
+                # First entry is the UI's display value (v4 in the auto
+                # case). Full list exposed too so the user can see whether
+                # the v6 multicast leg is also active.
+                "target": _format_target(*targets[0]),
+                "targets": [_format_target(h, p) for h, p in targets],
             })
         return self._send_file(path)
 
@@ -587,7 +622,7 @@ class SimHandler(BaseHTTPRequestHandler):
                 port = int(data["port"])
             except (KeyError, TypeError, ValueError):
                 return self._send_json({"error": "need host/port"}, status=400)
-            _state["target"] = (host, port)
+            _state["targets"] = [(host, port)]
             print(f"[sim] UDP target -> {_format_target(host, port)}")
             return self._send_json({"ok": True, "target": _format_target(host, port)})
 
@@ -605,17 +640,20 @@ def main():
     args = parser.parse_args()
 
     if args.target == "auto":
-        target_host = _detect_subnet_broadcast()
-        target_port = 4000
+        _state["targets"] = _detect_auto_targets()
     else:
         target_host, target_port = _parse_target(args.target)
-        if not target_host:
-            target_host = _detect_subnet_broadcast()
-    _state["target"] = (target_host, target_port)
+        if target_host:
+            _state["targets"] = [(target_host, target_port)]
+        else:
+            # `--target :5000` (port override but no host) — keep the auto
+            # fan-out and just rewrite the port on every leg.
+            _state["targets"] = _detect_auto_targets(port=target_port)
 
     server = ThreadingHTTPServer((args.host, args.port), SimHandler)
     print(f"[sim] http://{args.host}:{args.port}")
-    print(f"[sim] UDP target {_format_target(target_host, target_port)}")
+    for h, p in _state["targets"]:
+        print(f"[sim] UDP target {_format_target(h, p)}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
