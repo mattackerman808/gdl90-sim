@@ -75,12 +75,33 @@ function tickPhysics() {
   if (!State.running) return;
 
   const shift = Keys.ShiftLeft || Keys.ShiftRight;
-  const turnMult = shift ? 2 : 1;
   const climbMult = shift ? 2 : 1;
 
-  // Heading: 3°/sec standard rate while held
-  if (Keys.ArrowLeft)  State.hdg = (State.hdg - 3 * turnMult * dt + 360) % 360;
-  if (Keys.ArrowRight) State.hdg = (State.hdg + 3 * turnMult * dt) % 360;
+  // Heading: arrow keys command a target BANK, not a target turn rate.
+  // The realistic relationship is ω = g·tan(φ) / V (coordinated turn),
+  // so at the same bank a 110 kt aircraft turns much faster than a 300 kt
+  // aircraft — and pegging turn rate at 3°/s for every speed (the old
+  // model) made the AHRS show a 40° bank at jet speeds. Default 25°
+  // bank with Shift bumping to 45°. Below 15 kt fall back to constant
+  // heading rate so users can line up on the ground.
+  const prevHdg = State.hdg;
+  if (Keys.ArrowLeft || Keys.ArrowRight) {
+    const dir = Keys.ArrowLeft ? -1 : 1;
+    if (State.gs >= 15) {
+      const targetBank = dir * (shift ? 45 : 25);
+      const vFps = State.gs * 1.68781;
+      const omegaRad = (32.174 * Math.tan(targetBank * Math.PI / 180)) / vFps;
+      const omegaDeg = omegaRad * 180 / Math.PI;
+      State.hdg = (State.hdg + omegaDeg * dt + 360) % 360;
+    } else {
+      State.hdg = (State.hdg + dir * 3 * (shift ? 2 : 1) * dt + 360) % 360;
+    }
+  }
+
+  // Wrap-aware heading delta in [-180, +180] so a 359 → 001 crossing
+  // doesn't read as -358°. Match server.py:_derive_ahrs.
+  const hdgDelta = ((State.hdg - prevHdg) + 540) % 360 - 180;
+  State.turnRate = dt > 0 ? hdgDelta / dt : 0;
 
   // Altitude: 500 fpm while held
   const prevAlt = State.alt;
@@ -144,6 +165,27 @@ function updateHud() {
   document.getElementById("hHdg").textContent = Math.round(State.hdg);
   document.getElementById("hGs").textContent  = Math.round(State.gs);
   document.getElementById("hVs").textContent  = Math.round(State.vs);
+
+  // Mirror the AHRS values the server fabricates from this state
+  // (see server.py:_derive_ahrs). Lets the user verify the iPad PFD
+  // is showing the same bank / pitch / turn rate without instrumenting
+  // the iPad. Turn rate is exact (just dHDG/dt); bank uses the
+  // coordinated-turn formula tan(φ) = V·ω/g; pitch is FPA from VS/GS.
+  const turn = State.turnRate || 0;
+  let bank = 0;
+  if (State.gs > 15 && Math.abs(turn) > 0.01) {
+    const vFps = State.gs * 1.68781;
+    const omegaRad = turn * Math.PI / 180;
+    const tanPhi = (vFps * omegaRad) / 32.174;
+    bank = Math.max(-60, Math.min(60, Math.atan(tanPhi) * 180 / Math.PI));
+  }
+  let pitch = 0;
+  if (State.gs > 5) {
+    pitch = Math.atan2(State.vs, State.gs * 101.27) * 180 / Math.PI;
+  }
+  document.getElementById("hTurn").textContent  = turn.toFixed(1);
+  document.getElementById("hBank").textContent  = bank.toFixed(1);
+  document.getElementById("hPitch").textContent = pitch.toFixed(1);
 }
 
 // ---- Map & marker -----------------------------------------------------------
