@@ -47,6 +47,16 @@ html, body {
   z-index: 2;
 }
 .hud b { color: #9ca3af; width: 32px; display: inline-block; }
+.hud-alt {
+  background: transparent; color: inherit; font: inherit;
+  border: 1px solid transparent; border-radius: 3px;
+  width: 52px; padding: 0 3px; margin: 0;
+}
+.hud-alt:hover { border-color: #374151; }
+.hud-alt:focus {
+  background: #111827; border-color: #4b5563; outline: none;
+  color: #fbbf24;
+}
 
 .keys {
   position: absolute; bottom: 0; left: 0; right: 0;

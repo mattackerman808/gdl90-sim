@@ -26,6 +26,10 @@ const State = {
 
 const Keys = {};
 window.addEventListener("keydown", e => {
+  // Don't fly the airplane while the user is typing in a text box
+  // (UDP target, altitude entry) — but let modifier state through so
+  // Shift/Option held across a focus change stays tracked.
+  if (e.target.matches?.("input, select, textarea") && !e.key.startsWith("Shift") && !e.key.startsWith("Alt")) return;
   if (e.repeat) return;
   if (e.code === "Space") { e.preventDefault(); togglePlay(); return; }
   if (e.code === "KeyR")  { resetToStart(); return; }
@@ -75,26 +79,35 @@ function tickPhysics() {
   if (!State.running) return;
 
   const shift = Keys.ShiftLeft || Keys.ShiftRight;
-  const climbMult = shift ? 2 : 1;
+  const optKey = Keys.AltLeft || Keys.AltRight;
+  const climbMult = shift ? 2 : optKey ? 0.5 : 1;
 
   // Heading: arrow keys command a target BANK, not a target turn rate.
   // The realistic relationship is ω = g·tan(φ) / V (coordinated turn),
   // so at the same bank a 110 kt aircraft turns much faster than a 300 kt
   // aircraft — and pegging turn rate at 3°/s for every speed (the old
   // model) made the AHRS show a 40° bank at jet speeds. Default 25°
-  // bank with Shift bumping to 45°. Below 15 kt fall back to constant
-  // heading rate so users can line up on the ground.
+  // bank, Shift bumps to 45°, Option commands a standard-rate turn
+  // (3°/s — ~17° bank at 110 kt, capped at 25° so jet speeds don't
+  // over-bank). Below 15 kt fall back to constant heading rate so users
+  // can line up on the ground.
   const prevHdg = State.hdg;
   if (Keys.ArrowLeft || Keys.ArrowRight) {
     const dir = Keys.ArrowLeft ? -1 : 1;
     if (State.gs >= 15) {
-      const targetBank = dir * (shift ? 45 : 25);
       const vFps = State.gs * 1.68781;
-      const omegaRad = (32.174 * Math.tan(targetBank * Math.PI / 180)) / vFps;
+      let bankDeg;
+      if (optKey) {
+        const stdRateRad = 3 * Math.PI / 180;
+        bankDeg = Math.min(25, Math.atan((vFps * stdRateRad) / 32.174) * 180 / Math.PI);
+      } else {
+        bankDeg = shift ? 45 : 25;
+      }
+      const omegaRad = (32.174 * Math.tan(dir * bankDeg * Math.PI / 180)) / vFps;
       const omegaDeg = omegaRad * 180 / Math.PI;
       State.hdg = (State.hdg + omegaDeg * dt + 360) % 360;
     } else {
-      State.hdg = (State.hdg + dir * 3 * (shift ? 2 : 1) * dt + 360) % 360;
+      State.hdg = (State.hdg + dir * 3 * (shift ? 2 : optKey ? 0.5 : 1) * dt + 360) % 360;
     }
   }
 
@@ -103,11 +116,19 @@ function tickPhysics() {
   const hdgDelta = ((State.hdg - prevHdg) + 540) % 360 - 180;
   State.turnRate = dt > 0 ? hdgDelta / dt : 0;
 
-  // Altitude: 500 fpm while held
+  // Altitude: 500 fpm while held (Shift 1000, Option 250)
   const prevAlt = State.alt;
   if (Keys.ArrowUp)   State.alt = Math.min(45000, State.alt + 500 * climbMult * dt / 60);
   if (Keys.ArrowDown) State.alt = Math.max(0,     State.alt - 500 * climbMult * dt / 60);
-  State.vs = ((State.alt - prevAlt) / dt) * 60;
+  if (State.altJumped) {
+    // Altitude was typed in directly between ticks — the delta is a
+    // teleport, not a climb; deriving VS from it would send a
+    // multi-thousand-fpm spike to the receiver for one frame.
+    State.vs = 0;
+    State.altJumped = false;
+  } else {
+    State.vs = ((State.alt - prevAlt) / dt) * 60;
+  }
 
   // Position integration (nm = deg * 60; ft→nm via 1/6076; gs in kt = nm/hr).
   // State.hdg is magnetic; convert to true via local declination so the
@@ -161,7 +182,8 @@ setInterval(() => {}, 1000 / PHYSICS_HZ);  // keep JS alive; loop via rAF
 function updateHud() {
   document.getElementById("hLat").textContent = State.lat.toFixed(5);
   document.getElementById("hLon").textContent = State.lon.toFixed(5);
-  document.getElementById("hAlt").textContent = Math.round(State.alt);
+  const altEl = document.getElementById("hAlt");
+  if (document.activeElement !== altEl) altEl.value = Math.round(State.alt);
   document.getElementById("hHdg").textContent = Math.round(State.hdg);
   document.getElementById("hGs").textContent  = Math.round(State.gs);
   document.getElementById("hVs").textContent  = Math.round(State.vs);
@@ -268,6 +290,26 @@ function updateMarker() {
 // ---- Wire up UI -------------------------------------------------------------
 
 document.getElementById("playPause").addEventListener("click", togglePlay);
+
+// Altitude readout doubles as direct entry: click, type, Enter (or blur)
+// to jump the sim there. Esc reverts to the live value.
+{
+  const altEl = document.getElementById("hAlt");
+  const commitAlt = () => {
+    const v = parseFloat(altEl.value.replace(/,/g, ""));
+    if (Number.isFinite(v)) {
+      State.alt = Math.max(0, Math.min(45000, v));
+      State.altJumped = true;
+    }
+    altEl.value = Math.round(State.alt);
+  };
+  altEl.addEventListener("focus", () => altEl.select());
+  altEl.addEventListener("blur", commitAlt);
+  altEl.addEventListener("keydown", e => {
+    if (e.key === "Enter")  { commitAlt(); altEl.blur(); }
+    if (e.key === "Escape") { altEl.value = Math.round(State.alt); altEl.blur(); }
+  });
+}
 document.getElementById("startAt").addEventListener("change", e => setStart(e.target.value));
 document.getElementById("target").addEventListener("change", async e => {
   // Accept `[v6]:port` and `v4:port` (URL bracketed-host form). Rsplit on

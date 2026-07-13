@@ -33,7 +33,7 @@
 <aside class="hud">
   <div><b>LAT</b> <span id="hLat">—</span></div>
   <div><b>LON</b> <span id="hLon">—</span></div>
-  <div><b>ALT</b> <span id="hAlt">—</span> ft</div>
+  <div><b>ALT</b> <input id="hAlt" class="hud-alt" inputmode="numeric" spellcheck="false" title="Click and type an altitude, Enter to set"> ft</div>
   <div><b>HDG</b> <span id="hHdg">—</span>°</div>
   <div><b>GS</b>  <span id="hGs">—</span> kt</div>
   <div><b>VS</b>  <span id="hVs">—</span> fpm</div>
@@ -59,8 +59,8 @@
 </aside>
 
 <footer class="keys">
-  <span><kbd>←</kbd><kbd>→</kbd> bank 25° (shift = 45°)</span>
-  <span><kbd>↑</kbd><kbd>↓</kbd> climb/descend</span>
+  <span><kbd>←</kbd><kbd>→</kbd> bank 25° (⇧ 45°, ⌥ std rate)</span>
+  <span><kbd>↑</kbd><kbd>↓</kbd> ±500 fpm (⇧ 1000, ⌥ 250)</span>
   <span><kbd>+</kbd><kbd>−</kbd> speed ±10 kt</span>
   <span><kbd>Space</kbd> pause</span>
   <span><kbd>R</kbd> reset</span>
