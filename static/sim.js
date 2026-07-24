@@ -361,10 +361,28 @@ const SCENARIOS = {
   climbing: { clock: 12, range_nm: 1.5, alt_diff_ft: -800,  track: "head_on",    gs_kt: 150, vspeed_fpm: 2000, callsign: "TGT-CLM" },
 };
 
+// Screenshot-session callsigns: the TGT-* names are perfect for testing
+// (self-describing on screen) but read as simulated traffic in a marketing
+// frame — a pilot knows callsigns arrive as registrations or flight IDs.
+// The "Realistic callsigns" checkbox swaps them per scenario; the flight
+// dynamics are identical.
+const REAL_CALLSIGNS = {
+  warning:  "N731TC",
+  caution:  "N4587B",
+  cross_r:  "N922MK",
+  overtake: "N15KW",
+  below:    "N208PA",
+  climbing: "N66CD",
+};
+
 document.querySelectorAll(".scenario-buttons button").forEach(btn => {
   btn.addEventListener("click", async () => {
-    const scn = SCENARIOS[btn.dataset.scn];
-    if (!scn) return;
+    const preset = SCENARIOS[btn.dataset.scn];
+    if (!preset) return;
+    const scn = { ...preset };
+    if (document.getElementById("realCallsigns")?.checked) {
+      scn.callsign = REAL_CALLSIGNS[btn.dataset.scn] || scn.callsign;
+    }
     btn.disabled = true;
     try {
       const r = await fetch("/traffic/spawn", {

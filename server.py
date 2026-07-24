@@ -155,7 +155,15 @@ def _spawn_relative_target(scenario):
     else:
         hex_id = (0xA00000 | (int(time.time() * 1000) & 0xFFFFFF)) & 0xFFFFFF
 
-    callsign = str(scenario.get("callsign", f"SIM{hex_id & 0xFFF:03X}"))[:8]
+    # Default callsign: a plausible US registration derived from the hex,
+    # not "SIM###" — ambient targets get tapped during screenshot sessions
+    # and a synthetic-looking callsign in the detail card is a tell. Real
+    # US N-numbers are N1..N99999 optionally ending in 1-2 letters (no
+    # I/O); this yields e.g. N4213K deterministically per target.
+    suffix_letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # no I/O, per FAA rules
+    default_cs = (f"N{(hex_id % 8999) + 1000}"
+                  f"{suffix_letters[hex_id % len(suffix_letters)]}")
+    callsign = str(scenario.get("callsign", default_cs))[:8]
 
     return {
         "hex": hex_id,
